@@ -1,0 +1,13 @@
+package ordertracker.enums;
+
+public enum WebhookEventType {
+    PAYMENT_SUCCEEDED,
+    PAYMENT_FAILED,
+    PAYMENT_REFUNDED,
+    SHIPMENT_CREATED,
+    SHIPMENT_SHIPPED,
+    SHIPMENT_OUT_FOR_DELIVERY,
+    SHIPMENT_DELIVERED,
+    SHIPMENT_FAILED,
+    UNKNOWN
+}

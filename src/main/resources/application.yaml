@@ -1,0 +1,95 @@
+spring:
+  application:
+    name: ordertracker
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ordertracker
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        default_schema: public
+
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: ${MAIL_USERNAME:your@gmail.com}
+    password: ${MAIL_PASSWORD:yourAppPassword}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+    default-encoding: UTF-8
+
+  task:
+    execution:
+      pool:
+        core-size: 4
+        max-size: 16
+        queue-capacity: 100
+      thread-name-prefix: async-
+
+server:
+  port: 8080
+  servlet:
+    context-path: /
+  error:
+    include-message: always
+    include-binding-errors: always
+
+jwt:
+  secret: ${JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
+  expiration-ms: 86400000          # 24 saat
+  refresh-expiration-ms: 604800000 # 7 gün
+
+webhook:
+  payment-secret: ${WEBHOOK_PAYMENT_SECRET:payment-secret-key-change-in-prod}
+  shipment-secret: ${WEBHOOK_SHIPMENT_SECRET:shipment-secret-key-change-in-prod}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: alpha
+    tags-sorter: alpha
+    display-request-duration: true
+
+logging:
+  level:
+    root: INFO
+    ordertracker: DEBUG
+    org.springframework.security: INFO
+    org.hibernate.SQL: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: logs/ordertracker.log
+
+app:
+  frontend-url: http://localhost:3000
+  email:
+    retry-max-attempts: 3
+    retry-delay-ms: 2000
+  export:
+    max-rows: 10000

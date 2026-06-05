@@ -1,0 +1,65 @@
+version: '3.9'
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ordertracker-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ordertracker
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ordertracker"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: ordertracker-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@ordertracker.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ordertracker-app
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/ordertracker
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      JWT_SECRET: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
+      MAIL_USERNAME: ${MAIL_USERNAME:-your@gmail.com}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-yourAppPassword}
+      WEBHOOK_PAYMENT_SECRET: ${WEBHOOK_PAYMENT_SECRET:-payment-secret-key}
+      WEBHOOK_SHIPMENT_SECRET: ${WEBHOOK_SHIPMENT_SECRET:-shipment-secret-key}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - app_logs:/app/logs
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+  app_logs:

@@ -23,7 +23,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class EmailServiceImpl implements EmailService {
 
-    private final JavaMailSender         mailSender;
+    private final JavaMailSender            mailSender;
     private final NotificationLogRepository notifRepo;
 
     @Value("${spring.mail.username}")
@@ -36,7 +36,7 @@ public class EmailServiceImpl implements EmailService {
     @Async("emailExecutor")
     public void sendOrderStatusUpdate(Order order, String previousStatus) {
         String subject = "Order " + order.getOrderNumber() + " — Status Updated";
-        String body = buildStatusUpdateBody(order, previousStatus);
+        String body    = buildStatusUpdateBody(order, previousStatus);
         sendWithRetry(order, order.getUser().getEmail(), subject, body);
     }
 
@@ -52,14 +52,14 @@ public class EmailServiceImpl implements EmailService {
     @Scheduled(fixedDelay = 300_000)
     @Transactional
     public void retryFailedNotifications() {
-        List<NotificationLog> failed =
+        List<NotificationLog> failedList =
                 notifRepo.findByStatusAndAttemptCountLessThan("FAILED", maxAttempts);
 
-        if (failed.isEmpty()) return;
+        if (failedList.isEmpty()) return;
 
-        log.info("Retrying {} failed notifications", failed.size());
+        log.info("Retrying {} failed notifications", failedList.size());
 
-        for (NotificationLog notif : failed) {
+        for (NotificationLog notif : failedList) {
             try {
                 send(notif.getRecipientEmail(), notif.getSubject(), "Retry: " + notif.getSubject());
                 notif.setStatus("SENT");
@@ -75,7 +75,7 @@ public class EmailServiceImpl implements EmailService {
     }
 
     private void sendWithRetry(Order order, String to, String subject, String body) {
-        NotificationLog log = NotificationLog.builder()
+        NotificationLog notifLog = NotificationLog.builder()
                 .order(order)
                 .recipientEmail(to)
                 .subject(subject)
@@ -86,24 +86,24 @@ public class EmailServiceImpl implements EmailService {
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 send(to, subject, body);
-                log.setStatus("SENT");
-                log.setSentAt(Instant.now());
-                log.setAttemptCount(attempt);
-                EmailServiceImpl.log.info("Email sent to {} for order {}", to, order.getOrderNumber());
+                notifLog.setStatus("SENT");
+                notifLog.setSentAt(Instant.now());
+                notifLog.setAttemptCount(attempt);
+                log.info("Email sent to {} for order {}", to, order.getOrderNumber());
                 break;
             } catch (MailException e) {
-                log.setAttemptCount(attempt);
-                log.setErrorMessage(e.getMessage());
-                EmailServiceImpl.log.warn("Email attempt {}/{} failed for {}: {}", attempt, maxAttempts, to, e.getMessage());
+                notifLog.setAttemptCount(attempt);
+                notifLog.setErrorMessage(e.getMessage());
+                log.warn("Email attempt {}/{} failed for {}: {}", attempt, maxAttempts, to, e.getMessage());
 
                 if (attempt == maxAttempts) {
-                    log.setStatus("FAILED");
+                    notifLog.setStatus("FAILED");
                 } else {
                     sleep(2000L * attempt);
                 }
             }
         }
-        notifRepo.save(log);
+        notifRepo.save(notifLog);
     }
 
     private void send(String to, String subject, String body) {
@@ -118,15 +118,15 @@ public class EmailServiceImpl implements EmailService {
     private String buildStatusUpdateBody(Order order, String previousStatus) {
         return """
                 Hello %s,
-                
+
                 Your order %s has been updated.
-                
+
                 Previous status : %s
                 Current status  : %s
-                
+
                 Shipping address: %s
                 %s
-                
+
                 Thank you for shopping with us.
                 OrderTracker Team
                 """.formatted(
@@ -143,14 +143,14 @@ public class EmailServiceImpl implements EmailService {
     private String buildConfirmationBody(Order order) {
         return """
                 Hello %s,
-                
+
                 Your order %s has been confirmed!
-                
+
                 Total amount : %s %s
                 Shipping to  : %s
-                
+
                 We will notify you when your order ships.
-                
+
                 Thank you for shopping with us.
                 OrderTracker Team
                 """.formatted(

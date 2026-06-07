@@ -7,20 +7,16 @@ import ordertracker.dto.request.PaymentWebhookRequest;
 import ordertracker.dto.request.ShipmentWebhookRequest;
 import ordertracker.dto.response.PageResponse;
 import ordertracker.dto.response.WebhookEventResponse;
-import ordertracker.entity.Order;
 import ordertracker.entity.WebhookEvent;
-import ordertracker.enums.OrderStatus;
 import ordertracker.enums.WebhookEventType;
 import ordertracker.enums.WebhookStatus;
 import ordertracker.exception.ResourceNotFoundException;
-import ordertracker.repository.OrderRepository;
 import ordertracker.repository.WebhookEventRepository;
-import ordertracker.service.EmailService;
 import ordertracker.service.WebhookService;
 import ordertracker.util.HmacSignatureVerifier;
+import ordertracker.webhook.WebhookProcessor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Pageable;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,10 +28,8 @@ import java.time.Instant;
 public class WebhookServiceImpl implements WebhookService {
 
     private final WebhookEventRepository webhookRepo;
-    private final OrderRepository        orderRepo;
-    private final EmailService           emailService;
     private final HmacSignatureVerifier  signatureVerifier;
-    private final OrderServiceImpl       orderService;
+    private final WebhookProcessor       webhookProcessor;
     private final ObjectMapper           objectMapper;
 
     @Value("${webhook.payment-secret}")
@@ -53,11 +47,9 @@ public class WebhookServiceImpl implements WebhookService {
             log.warn("Invalid payment webhook signature from {}", ip);
         }
 
-        WebhookEventType eventType = resolvePaymentEventType(request.getEventType());
-
         WebhookEvent event = WebhookEvent.builder()
                 .source("PAYMENT")
-                .eventType(eventType)
+                .eventType(resolvePaymentEventType(request.getEventType()))
                 .status(WebhookStatus.RECEIVED)
                 .orderReference(request.getOrderId())
                 .payload(rawPayload)
@@ -66,9 +58,9 @@ public class WebhookServiceImpl implements WebhookService {
                 .build();
 
         event = webhookRepo.save(event);
-        log.info("Payment webhook received: type={} order={}", eventType, request.getOrderId());
+        log.info("Payment webhook received: type={} order={}", event.getEventType(), request.getOrderId());
 
-        processPaymentAsync(event.getId(), request);
+        webhookProcessor.processPayment(event.getId(), request);
         return event.getId();
     }
 
@@ -81,11 +73,9 @@ public class WebhookServiceImpl implements WebhookService {
             log.warn("Invalid shipment webhook signature from {}", ip);
         }
 
-        WebhookEventType eventType = resolveShipmentEventType(request.getEventType());
-
         WebhookEvent event = WebhookEvent.builder()
                 .source("SHIPMENT")
-                .eventType(eventType)
+                .eventType(resolveShipmentEventType(request.getEventType()))
                 .status(WebhookStatus.RECEIVED)
                 .orderReference(request.getOrderId())
                 .payload(rawPayload)
@@ -94,9 +84,9 @@ public class WebhookServiceImpl implements WebhookService {
                 .build();
 
         event = webhookRepo.save(event);
-        log.info("Shipment webhook received: type={} order={}", eventType, request.getOrderId());
+        log.info("Shipment webhook received: type={} order={}", event.getEventType(), request.getOrderId());
 
-        processShipmentAsync(event.getId(), request);
+        webhookProcessor.processShipment(event.getId(), request);
         return event.getId();
     }
 
@@ -105,8 +95,7 @@ public class WebhookServiceImpl implements WebhookService {
     public PageResponse<WebhookEventResponse> getLogs(WebhookStatus status, String source,
                                                       Instant from, Instant to, Pageable pageable) {
         return PageResponse.from(
-                webhookRepo.findFiltered(status, source, from, to, pageable)
-                        .map(this::toResponse)
+                webhookRepo.findFiltered(status, source, from, to, pageable).map(this::toResponse)
         );
     }
 
@@ -116,130 +105,6 @@ public class WebhookServiceImpl implements WebhookService {
         return webhookRepo.findById(id)
                 .map(this::toResponse)
                 .orElseThrow(() -> new ResourceNotFoundException("WebhookEvent", id));
-    }
-
-    @Async("webhookExecutor")
-    @Transactional
-    public void processPaymentAsync(Long eventId, PaymentWebhookRequest request) {
-        WebhookEvent event = webhookRepo.findById(eventId).orElse(null);
-        if (event == null) return;
-
-        try {
-            event.setStatus(WebhookStatus.PROCESSING);
-            webhookRepo.save(event);
-
-            Order order = orderRepo.findByOrderNumber(request.getOrderId())
-                    .orElseGet(() -> orderRepo.findByPaymentReference(request.getPaymentReference())
-                            .orElse(null));
-
-            if (order == null) {
-                event.setStatus(WebhookStatus.IGNORED);
-                event.setResponseMessage("Order not found: " + request.getOrderId());
-                webhookRepo.save(event);
-                return;
-            }
-
-            String prevStatus = order.getStatus().name();
-
-            switch (event.getEventType()) {
-                case PAYMENT_SUCCEEDED -> {
-                    order.setPaymentReference(request.getPaymentReference());
-                    orderService.updateStatusInternal(order, OrderStatus.CONFIRMED,
-                            "WEBHOOK_PAYMENT", "Payment succeeded");
-                    emailService.sendOrderConfirmation(order);
-                }
-                case PAYMENT_FAILED -> {
-                    orderService.updateStatusInternal(order, OrderStatus.PAYMENT_FAILED,
-                            "WEBHOOK_PAYMENT", "Payment failed: " + request.getFailureReason());
-                    emailService.sendOrderStatusUpdate(order, prevStatus);
-                }
-                case PAYMENT_REFUNDED -> {
-                    orderService.updateStatusInternal(order, OrderStatus.REFUNDED,
-                            "WEBHOOK_PAYMENT", "Payment refunded");
-                    emailService.sendOrderStatusUpdate(order, prevStatus);
-                }
-                default -> log.warn("Unhandled payment event type: {}", event.getEventType());
-            }
-
-            event.setStatus(WebhookStatus.PROCESSED);
-            event.setProcessedAt(Instant.now());
-            event.setResponseMessage("Processed successfully");
-
-        } catch (Exception e) {
-            log.error("Error processing payment webhook {}: {}", eventId, e.getMessage(), e);
-            event.setStatus(WebhookStatus.FAILED);
-            event.setResponseMessage(e.getMessage());
-            event.setRetryCount(event.getRetryCount() + 1);
-        }
-
-        webhookRepo.save(event);
-    }
-
-    @Async("webhookExecutor")
-    @Transactional
-    public void processShipmentAsync(Long eventId, ShipmentWebhookRequest request) {
-        WebhookEvent event = webhookRepo.findById(eventId).orElse(null);
-        if (event == null) return;
-
-        try {
-            event.setStatus(WebhookStatus.PROCESSING);
-            webhookRepo.save(event);
-
-            Order order = orderRepo.findByOrderNumber(request.getOrderId())
-                    .orElseGet(() -> orderRepo.findByTrackingNumber(request.getTrackingNumber())
-                            .orElse(null));
-
-            if (order == null) {
-                event.setStatus(WebhookStatus.IGNORED);
-                event.setResponseMessage("Order not found: " + request.getOrderId());
-                webhookRepo.save(event);
-                return;
-            }
-
-            String prevStatus = order.getStatus().name();
-
-            switch (event.getEventType()) {
-                case SHIPMENT_CREATED -> {
-                    order.setTrackingNumber(request.getTrackingNumber());
-                    orderService.updateStatusInternal(order, OrderStatus.PROCESSING,
-                            "WEBHOOK_SHIPMENT", "Shipment created");
-                }
-                case SHIPMENT_SHIPPED -> {
-                    order.setTrackingNumber(request.getTrackingNumber());
-                    orderService.updateStatusInternal(order, OrderStatus.SHIPPED,
-                            "WEBHOOK_SHIPMENT", "Order shipped via " + request.getCarrier());
-                    emailService.sendOrderStatusUpdate(order, prevStatus);
-                }
-                case SHIPMENT_OUT_FOR_DELIVERY -> {
-                    orderService.updateStatusInternal(order, OrderStatus.OUT_FOR_DELIVERY,
-                            "WEBHOOK_SHIPMENT", "Out for delivery");
-                    emailService.sendOrderStatusUpdate(order, prevStatus);
-                }
-                case SHIPMENT_DELIVERED -> {
-                    orderService.updateStatusInternal(order, OrderStatus.DELIVERED,
-                            "WEBHOOK_SHIPMENT", "Delivered");
-                    emailService.sendOrderStatusUpdate(order, prevStatus);
-                }
-                case SHIPMENT_FAILED -> {
-                    event.setStatus(WebhookStatus.PROCESSED);
-                    event.setResponseMessage("Shipment failed: " + request.getFailureReason());
-                    log.warn("Shipment failed for order {}: {}", order.getOrderNumber(), request.getFailureReason());
-                }
-                default -> log.warn("Unhandled shipment event type: {}", event.getEventType());
-            }
-
-            event.setStatus(WebhookStatus.PROCESSED);
-            event.setProcessedAt(Instant.now());
-            event.setResponseMessage("Processed successfully");
-
-        } catch (Exception e) {
-            log.error("Error processing shipment webhook {}: {}", eventId, e.getMessage(), e);
-            event.setStatus(WebhookStatus.FAILED);
-            event.setResponseMessage(e.getMessage());
-            event.setRetryCount(event.getRetryCount() + 1);
-        }
-
-        webhookRepo.save(event);
     }
 
     private WebhookEventType resolvePaymentEventType(String type) {
@@ -253,11 +118,11 @@ public class WebhookServiceImpl implements WebhookService {
 
     private WebhookEventType resolveShipmentEventType(String type) {
         return switch (type.toLowerCase()) {
-            case "shipment.created",          "shipment_created"          -> WebhookEventType.SHIPMENT_CREATED;
+            case "shipment.created",          "shipment_created"            -> WebhookEventType.SHIPMENT_CREATED;
             case "shipment.shipped",          "shipment_shipped", "shipped" -> WebhookEventType.SHIPMENT_SHIPPED;
-            case "shipment.out_for_delivery", "out_for_delivery"           -> WebhookEventType.SHIPMENT_OUT_FOR_DELIVERY;
-            case "shipment.delivered",        "delivered"                  -> WebhookEventType.SHIPMENT_DELIVERED;
-            case "shipment.failed",           "shipment_failed"            -> WebhookEventType.SHIPMENT_FAILED;
+            case "shipment.out_for_delivery", "out_for_delivery"            -> WebhookEventType.SHIPMENT_OUT_FOR_DELIVERY;
+            case "shipment.delivered",        "delivered"                   -> WebhookEventType.SHIPMENT_DELIVERED;
+            case "shipment.failed",           "shipment_failed"             -> WebhookEventType.SHIPMENT_FAILED;
             default -> WebhookEventType.UNKNOWN;
         };
     }

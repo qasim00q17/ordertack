@@ -36,7 +36,8 @@ public class SecurityConfig {
 
     private static final String[] PUBLIC_PATHS = {
             "/api/auth/**",
-            "/api/webhooks/**",
+            "/api/webhooks/payment",
+            "/api/webhooks/shipment",
             "/v3/api-docs/**",
             "/swagger-ui/**",
             "/swagger-ui.html",
@@ -52,8 +53,9 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(PUBLIC_PATHS).permitAll()
                         .requestMatchers(HttpMethod.GET, "/ws/**").permitAll()
-                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                        // Specific rules BEFORE wildcards — order matters
                         .requestMatchers("/api/webhooks/logs/**").hasRole("ADMIN")
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated()
                 )
                 .authenticationProvider(authenticationProvider())
